@@ -1,0 +1,648 @@
+---
+title: "US Virgin Islands: Climate, Demographics, and Economic Analysis"
+author: "Madeleine Livaudais"
+date: today
+format:
+  pdf:
+    geometry: margin=0.8in
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{placeins}
+        \floatplacement{figure}{H}
+        \floatplacement{table}{H}
+execute:
+  warning: false
+  message: false
+  echo: false
+editor: visual
+---
+
+
+```{r}
+#| label: libraries
+#| echo: false
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tigris)
+library(sf)
+library(RColorBrewer)
+library(gt)
+library(ggrepel)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+```
+
+```{r}
+#| label: read in data files
+#| echo: false
+
+# read in clean csv files written from data cleaning script
+ethnicity <- read.csv("data/clean_data/ethnicity.csv")
+hurricanes <- read.csv("data/clean_data/hurricanes.csv")
+weather <- read.csv("data/clean_data/usvi_clean_weather.csv")
+economic <- read.csv("data/clean_data/wdi_economic.csv")
+population <- read.csv("data/clean_data/wdi_pop_long.csv")
+tourism <- read.csv("data/clean_data/tourism_arrivals.csv")
+
+```
+
+# Introduction
+
+## Background
+
+The United States Virgin Islands (USVI) is an unincorporated territory of the United States situated in the northeastern Caribbean Sea, approximately 40 miles east of Puerto Rico. The territory comprises three main islands (St. Croix, St. Thomas, and St. John) along with approximately 50 smaller islets and cays, covering a total land area of 133 square miles.
+
+```{r}
+#| label: map of islands
+#| fig-cap: "Map of the US Virgin Islands showing the three main islands"
+#| fig-align: center
+
+options(tigris_use_cache = TRUE)
+
+# Island-level polygons (each island is a "county-equivalent")
+usvi_islands <- counties(state = "VI", year = 2022, cb = TRUE)
+
+# Save the islands separately
+st_croix <- usvi_islands %>% dplyr::filter(NAME == "St. Croix")
+st_thomas_john <- usvi_islands %>% dplyr::filter(NAME %in% c("St. Thomas", "St. John"))
+
+# static map of the islands
+ggplot(usvi_islands) +
+  geom_sf(aes(fill = NAME), color = "black") +
+  scale_fill_brewer(
+    palette = "Set2",
+    name = "Island"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(title = "U.S. Virgin Islands")
+```
+
+The islands feature a subtropical climate with temperatures averaging around 78°F, moderated by steady northeasterly trade winds, and experience distinct dry and wet seasons with annual rainfall averaging 45 inches. Since the United States acquired the territory, it has since developed a diverse economy centered on tourism, with approximately 2.5 million visitors annually. The USVI's geographic location in the Atlantic hurricane belt, combined with its tropical climate and island topography, makes it particularly vulnerable to extreme weather events, while its small land area and limited freshwater resources present ongoing environmental and infrastructure challenges. Understanding the interplay between the territory's climate patterns and demographic trends is essential for sustainable development planning and disaster preparedness in this unique Caribbean archipelago.
+
+## Research Questions
+
+This analysis will examines several key questions about the USVI:
+
+1.  What is the frequency and intensity of hurricanes affecting the USVI?
+2.  How do major hurricanes impact the tourism-dependent economy?
+3.  What are the demographic characteristics and trends in the USVI?
+4.  How long does economic recovery take after major hurricane events?
+
+# Data Sources and Methods
+
+This analysis integrates data from multiple authoritative sources:
+
+### Population and Economic Data
+- **Source**: World Bank World Development Indicators (WDI)
+- **Time Period**: 1975-2023 (varies by indicator)
+- **Key Variables**: Total population, international tourism arrivals, tourism receipts, unemployment rate, life expectancy, fertility rate, employment in services, labor force
+- **Method**: The data was compiled from the World Bank database online and downloaded as a csv in wide format with years as columns. The data was pivoted to long format for time-series analysis.
+
+### Ethnicity Data
+- **Source**: U.S. Census Bureau, 2020 Decennial Census DP1
+- **Time Period**: 2020
+- **Method**: Data for U.S. territories is not available through the Census API, so official published figures were used directly from Census Bureau reports. Only the main "One Race" categories were included to avoid double-counting individuals in the "alone or in combination" categories.
+
+### Tourism Arrivals Data
+- **Source**: USVI Bureau of Economic Research
+- **Time Period**: 1995-2024 (varies by type)
+- **Variables**: Monthly air arrivals and cruise passenger arrivals to St. Thomas/St. John, St. Croix, and USVI total
+- **Method**: Extracted from PDF reports downloaded from the USVI Bureau of Economic Research using custom R scripts. Missing data was filled in manually if possible or left as it was truly missing from the source. 
+
+### Weather Data
+- **Source**: NOAA National Centers for Environmental Information
+- **Time Period**: 1975-2025
+- **Variables**: Precipitation, temperature (max/min), storm events
+- **Method**: Data collected using `rnoaa` R package with custom looping functions to satisfy API restrictions. This allow for collection of multiple years of data, although the method is computationally exhaustive. 
+
+### Hurricane Data
+- **Source**: NOAA National Hurricane Center
+- **Time Period**: 1989-2019
+- **Variables**: Hurricane names, Saffir-Simpson categories, landfall dates
+- **Method**: The hurricane data was compiled from NOAA National Hurricane Center reports as well as other internet searches. Each hurricane's landfall date in the USVI was manually verified through historical records. The dataset includes only hurricanes that made landfall or had significant direct impact on the USVI.
+
+# Demographics and Population
+
+The 2020 Census reveals that the USVI has a diverse population of 87,146 people, with Black or African American residents comprising the majority at 71.4% of the population. White follows with 13.3% of the population and mixed races come in next after than. This aligns with the history of the island. 
+
+```{r}
+#| label: fig-ethnicity-bar
+#| fig-cap: "USVI Population by Race/Ethnicity"
+#| fig-align: center
+
+ethnicity %>%
+  filter(category != "Total Population") %>%
+  mutate(category = fct_reorder(category, population)) %>%
+  ggplot(aes(x = category, y = population, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = paste0(percent, "%")), hjust = -0.1, size = 3.5) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "USVI Population by Race/Ethnicity (2020)",
+    subtitle = "Total Population: 87,146",
+    x = NULL,
+    y = "Population",
+    caption = "Source: U.S. Census Bureau, 2020 Decennial Census"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    plot.title.position = "plot",
+    plot.margin = margin(t = 10, r = 40, b = 10, l = 10),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+
+
+```{r}
+#| label: tbl-ethnicity
+#| tbl-cap: "USVI population by race/ethnicity"
+
+ethnicity %>%
+  arrange(desc(population)) %>%
+  mutate(
+    population = format(population, big.mark = ","),
+    percent    = paste0(percent, "%")
+  ) %>%
+  select(category, population, percent) %>%   
+  kable(
+    booktabs = TRUE,
+    caption  = "USVI Population by Race/Ethnicity (2020 Decennial Census)",
+    col.names = c("Race/Ethnicity", "Population", "Percent"),
+    escape = TRUE
+  ) %>%
+  kable_styling(
+    latex_options = c("HOLD_position")  
+  )
+```
+
+The population of the USVI began to increase in the 1980's and heavily in the 1990's. It plateaued for about a decade and then began to decline around 2010. We also see in the age structure the elderly population growing as the youth population declines. Through other data from the WDI, we have seen birth rates decline as well, validating the age structure. 
+
+```{r}
+#| label: population total over time 
+#| fig-cap: "Population totals in USVI (1975-2024)"
+
+population %>%
+  filter(Series.Name == "Population, total") %>%
+  ggplot(aes(x = year, y = value)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_point(color = "steelblue", size = 2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "USVI Total Population Over Time",
+    subtitle = "1975-2024",
+    x = "Year",
+    y = "Population",
+    caption = "Source: World Bank WDI"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12)
+  )
+```
+
+```{r}
+#| label: population age groups over time 
+#| fig-cap: "Population Age Structure in USVI (1975-2024)"
+
+population %>%
+  filter(Series.Name %in% c("Population ages 0-14 (% of total population)",
+                            "Population ages 15-64 (% of total population)",
+                            "Population ages 65 and above (% of total population)")) %>%
+  mutate(Series.Name = case_when(
+    Series.Name == "Population ages 0-14 (% of total population)" ~ "Ages 0-14 (Youth)",
+    Series.Name == "Population ages 15-64 (% of total population)" ~ "Ages 15-64 (Working Age)",
+    Series.Name == "Population ages 65 and above (% of total population)" ~ "Ages 65+ (Elderly)"
+  )) %>%
+  ggplot(aes(x = year, y = value, fill = Series.Name)) +
+  geom_area(alpha = 0.7) +
+  scale_fill_brewer(palette = "Set2", name = "Age Group") +
+  labs(
+    title = "USVI Population Age Structure Over Time",
+    subtitle = "Percentage of total population by age group",
+    x = "Year",
+    y = "Percentage of Total Population",
+    caption = "Source: World Bank WDI"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = "bottom"
+  )
+```
+
+## Key Demographic Findings
+
+The demographic and population composition shows:
+
+-   **Black or African American** residents represent the overwhelming majority (71.4%)
+-   **White** residents comprise 13.3% of the population
+-   **Two or More Races** accounts for 7.5%
+-   Other racial categories each represent less than 7% of the population
+-   Population overall increased until about 2000 and has been declining since 2010. 
+-   Elderly population is increasing as the youth population declines over time. 
+
+This diversity reflects the USVI's historical and cultural ties to the Caribbean region.
+
+
+# Climate and Hurricane History
+
+## Hurricane Frequency and Intensity
+
+Between 1989 and 2019, the USVI experienced 13 hurricanes that made landfall or had significant direct impact on the islands. Five of those were considered major hurricanes (category 3, 4 or 5). This represents an average of approximately one major hurricane every 2.3 years, highlighting the territory's vulnerability to tropical cyclones.
+
+```{r}
+#| label: fig-hurricane-timeline
+#| fig-cap: "Timeline of major hurricanes affecting USVI (1989-2019)"
+#| fig-width: 12
+#| fig-height: 7
+
+hurricanes %>%
+  mutate(landfall_date = as.Date(landfall_date)) %>%
+  ggplot(aes(x = landfall_date, y = Category, color = factor(Category))) +
+  geom_point(size = 5) +
+  geom_text_repel(aes(label = str_remove(`Hurricane.name`, "Hurricane ")), 
+                  hjust = 0, size = 3.5,
+                  box.padding = 0.5,
+                  point.padding = 0.3,
+                  segment.color = "grey50",
+                  max.overlaps = Inf) +
+  scale_color_manual(
+    values = c("1" = "#fec44f", "2" = "#fe9929", "3" = "#ec7014", 
+               "4" = "#cc4c02", "5" = "#8c2d04"),
+    name = "Saffir-Simpson\nCategory"
+  ) +
+  scale_y_continuous(breaks = 1:5, expand = expansion(mult = c(0.05, 0.15))) +
+  scale_x_date(date_labels = "%b %Y", expand = expansion(mult = c(0.05, 0.15))) +
+  labs(
+    title = "Major Hurricanes Affecting USVI (1989-2019)",
+    subtitle = "Point size indicates hurricane intensity",
+    x = "Landfall Date",
+    y = "Saffir-Simpson Category",
+    caption = "Source: NOAA National Hurricane Center"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 13),
+    axis.title.y = element_text(size = 13),
+    axis.text.x = element_text(hjust = 1, size = 11)
+  )
+```
+
+```{r}
+#| label: fig-hurricane-frequency
+#| fig-cap: "Number of major hurricanes by decade"
+
+hurricanes %>%
+  mutate(decade = paste0(floor(Year / 10) * 10, "s")) %>%
+  count(decade, Category) %>%
+  ggplot(aes(x = decade, y = n, fill = factor(Category))) +
+  geom_col() +
+  scale_fill_manual(
+    values = c("1" = "#fec44f", "2" = "#fe9929", "3" = "#ec7014", 
+               "4" = "#cc4c02", "5" = "#8c2d04"),
+    name = "Category"
+  ) +
+  labs(
+    title = "Number of Major Hurricanes by Decade",
+    x = "Decade",
+    y = "Number of Hurricanes",
+    caption = "Source: NOAA NHC"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12)
+  )
+
+```
+
+
+```{r}
+#| label: tbl-hurricanes
+#| tbl-cap: "Hurricanes affecting USVI (1989-2019)"
+
+hurricanes %>%
+  arrange(desc(Category), Year) %>%
+  select(Year, `Hurricane.name`, Category, landfall_date) %>%
+  gt() %>%
+  tab_header(
+    title = "Hurricanes Affecting USVI",
+    subtitle = "1989-2019"
+  ) %>%
+  cols_label(
+    Year = "Year",
+    `Hurricane.name` = "Hurricane",
+    Category = "Category",
+    landfall_date = "Landfall Date"
+  ) %>%
+  data_color(
+    columns = Category,
+    colors = scales::col_numeric(
+      palette = c("#ffffcc", "#fed976", "#fd8d3c", "#e31a1c", "#800026"),
+      domain = c(1, 5)
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  )
+```
+
+## Notable Hurricane Events: The Devastating 2017 Season
+
+The 2017 hurricane season was particularly catastrophic for the USVI, with two Category 5 hurricanes striking within 14 days:
+
+-   **Hurricane Irma** (September 6, 2017): Category 5 with 185 mph winds
+-   **Hurricane Maria** (September 20, 2017): Category 5 with 175 mph winds
+
+This double strike caused unprecedented damage to infrastructure, housing, and the economy.
+
+---
+
+# Tourism Trends and Hurricane Impacts
+
+Tourism is the economic backbone of the USVI, comprising both air arrivals and cruise passengers. The territory typically receives 600,000-700,000 air arrivals and 1.5-2 million cruise passengers annually.
+
+```{r}
+#| label: fig-tourism-by-type
+#| fig-cap: "Annual tourism arrivals by type (1995-2024)"
+
+tourism %>%
+  group_by(year, arrival_type) %>%
+  summarise(total = sum(usvi_total, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = year, y = total, color = arrival_type)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(labels = comma) +
+  scale_color_manual(
+    values = c("air" = "#1f78b4", "cruise" = "#33a02c"),
+    labels = c("Air Arrivals", "Cruise Passengers"),
+    name = "Arrival Type"
+  ) +
+  labs(
+    title = "USVI Tourism Arrivals by Type",
+    subtitle = "Air arrivals and cruise passengers (1995-2024)",
+    x = "Year",
+    y = "Number of Arrivals",
+    caption = "Source: USVI Bureau of Economic Research"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = "bottom"
+  )
+```
+
+The 2017 hurricane season had a devastating impact on USVI tourism, with both air and cruise arrivals plummeting. You can also begin to see the effects of COVID-19 from this figure. 
+
+```{r}
+#| label: fig-2017-impact-combined
+#| fig-cap: "Tourism impact of 2017 Hurricanes by type"
+
+# Prepare data with hurricane overlay
+hurricane_years <- hurricanes %>%
+  select(Year, `Hurricane.name`, Category) %>%
+  rename(year = Year)
+
+tourism %>%
+  filter(year >= 2014, year <= 2024) %>%
+  group_by(year, arrival_type) %>%
+  summarise(total = sum(usvi_total, na.rm = TRUE), .groups = "drop") %>%
+  left_join(hurricane_years, by = "year") %>%
+  mutate(
+    period = case_when(
+      year < 2017 ~ "Before 2017",
+      year == 2017 ~ "2017 (Irma & Maria)",
+      year > 2017 ~ "After 2017"
+    ),
+    arrival_type_label = ifelse(arrival_type == "air", "Air Arrivals", "Cruise Passengers")
+  ) %>%
+  ggplot(aes(x = year, y = total, fill = period)) +
+  geom_col() +
+  geom_vline(xintercept = 2017, linetype = "dashed", color = "red", linewidth = 1) +
+  facet_wrap(~arrival_type_label, scales = "free_y", ncol = 1) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_manual(
+    values = c("Before 2017" = "lightblue",
+               "2017 (Irma & Maria)" = "red",
+               "After 2017" = "lightgreen"),
+    name = "Period"
+  ) +
+  labs(
+    title = "Tourism Impact of 2017 Hurricanes Irma and Maria",
+    subtitle = "Comparing air and cruise arrivals before, during, and after 2017",
+    x = "Year",
+    y = "Number of Arrivals",
+    caption = "Source: USVI Bureau of Economic Research"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    strip.text = element_text(face = "bold", size = 11),
+    legend.position = "bottom"
+  )
+```
+
+
+
+```{r}
+#| label: tbl-tourism-recovery
+#| tbl-cap: "Tourism recovery metrics comparing 2016-2020"
+
+tourism %>%
+  filter(year %in% c(2016, 2017, 2018, 2019, 2020)) %>%
+  group_by(year, arrival_type) %>%
+  summarise(total = sum(usvi_total, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = arrival_type, values_from = total) %>%
+  mutate(
+    air_pct_change = (air - lag(air)) / lag(air) * 100,
+    cruise_pct_change = (cruise - lag(cruise)) / lag(cruise) * 100
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Tourism Recovery Around 2017 Hurricanes",
+    subtitle = "Year-over-year changes by arrival type"
+  ) %>%
+  fmt_number(columns = c(air, cruise), decimals = 0) %>%
+  fmt_number(columns = c(air_pct_change, cruise_pct_change), decimals = 1) %>%
+  cols_label(
+    year = "Year",
+    air = "Air Arrivals",
+    cruise = "Cruise Passengers",
+    air_pct_change = "Air % Change",
+    cruise_pct_change = "Cruise % Change"
+  ) %>%
+  data_color(
+    columns = c(air_pct_change, cruise_pct_change),
+    colors = scales::col_numeric(
+      palette = c("red", "white", "green"),
+      domain = c(-80, 30)
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  )
+```
+
+
+## Key Finding: 2017 Tourism Collapse
+
+Both air and cruise tourism collapsed in 2017:
+- **Air arrivals** dropped by approximately 36% 
+- **Cruise passengers** declined by about 27%
+
+Recovery took 3-4 years, with arrivals still below pre-hurricane levels in 2020 (though COVID-19 also impacted 2020 numbers).
+
+---
+
+# Weather and Climate Patterns
+
+The temperature data (1975-2025) reveals remarkable stability in the USVI climate over the past 50 years, with average maximum temperatures consistently around 28-30°C (82-86°F) and minimum temperatures around 22-24°C (72-75°F). While there is slight year-to-year variation, the trend lines show no significant long-term warming or cooling pattern, suggesting that the islands maintain their characteristic subtropical climate despite global climate change concerns.
+
+```{r}
+#| label: fig-temperature-trends
+#| fig-cap: "Annual average temperatures in USVI"
+
+weather %>%
+  filter(datatype %in% c("TMAX", "TMIN"), year >= 1975) %>%
+  group_by(year, datatype) %>%
+  summarise(avg_temp = mean(value_clean, na.rm = TRUE), .groups = "drop") %>%
+  mutate(datatype = ifelse(datatype == "TMAX", "Maximum", "Minimum")) %>%
+  ggplot(aes(x = year, y = avg_temp, color = datatype)) +
+  geom_line(linewidth = 1.2) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = c("Maximum" = "#d73027", "Minimum" = "#4575b4"),
+                     name = "Temperature Type") +
+  labs(
+    title = "Annual Average Temperatures in USVI",
+    subtitle = "Daily maximum and minimum temperatures (1975-2025)",
+    x = "Year",
+    y = "Temperature (°C)",
+    caption = "Source: NOAA NCEI"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = "bottom"
+  )
+```
+
+Annual precipitation in the USVI shows considerable variability, ranging from approximately 1,500mm to over 5,500mm per year. While hurricane years (shown in red) are often associated with increased rainfall, the relationship is complex—some hurricane years show elevated precipitation while others do not, depending on the storm's characteristics and duration.
+
+```{r}
+#| label: fig-precipitation
+#| fig-cap: "Annual precipitation with hurricane years highlighted"
+
+weather %>%
+  filter(datatype == "PRCP", year >= 1975) %>%
+  group_by(year) %>%
+  summarise(total_precip = sum(value_clean, na.rm = TRUE), .groups = "drop") %>%
+  left_join(hurricane_years, by = "year") %>%
+  mutate(hurricane_year = !is.na(Category)) %>%
+  ggplot(aes(x = year, y = total_precip, fill = hurricane_year)) +
+  geom_col() +
+  geom_smooth(aes(x = year, y = total_precip), method = "loess", color = "darkred", 
+              se = TRUE, alpha = 0.2, inherit.aes = FALSE) +
+  scale_fill_manual(
+    values = c("TRUE" = "#d73027", "FALSE" = "#4575b4"),
+    labels = c("Normal Year", "Hurricane Year"),
+    name = ""
+  ) +
+  labs(
+    title = "Annual Precipitation in USVI",
+    subtitle = "Hurricane years shown in red (1975-2025)",
+    x = "Year",
+    y = "Total Precipitation (mm)",
+    caption = "Sources: NOAA NCEI, NOAA NHC"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = "bottom"
+  )
+```
+
+
+## Discussion
+
+The USVI experienced 13 hurricanes over 30 years (1989-2019), averaging one major storm every 2.3 years, highlighting the territory's extreme vulnerability to tropical cyclones. Recent decades have seen an increase in the most intense storms, with more Category 4 and 5 hurricanes affecting the islands. The 2017 double strike from Hurricanes Irma and Maria was unprecedented in its devastation, causing tourism to collapse by 27-36% and demonstrating the catastrophic impact that back-to-back major hurricanes can have on a small island economy.
+
+The USVI economy is heavily reliant on tourism, with 2-2.8 million annual visitors comprising both air arrivals and cruise passengers. Major hurricanes cause immediate, sharp declines in tourism, with economic recovery taking multiple years even after infrastructure is rebuilt. The 2017 hurricane season represents the worst-case scenario in recent history, with a 24% decline in tourism arrivals that required 3-4 years for full recovery, underscoring the long-lasting economic consequences of major hurricane events on tourism-dependent island economies.
+
+The territory's small population of 87,146 residents makes it particularly vulnerable to economic shocks, as there is limited capacity to absorb financial losses or workforce disruptions. The stable and diverse racial/ethnic composition, with 71.4% Black or African American residents, reflects the islands' Caribbean heritage and historical ties to the broader West Indian region.
+
+Long-term temperature data shows remarkable stability over the past 50 years, with no significant warming or cooling trends despite global climate change. However, annual precipitation varies considerably, ranging from 1,500mm to over 5,500mm per year, with the highest totals consistently occurring during hurricane years. This variability in rainfall, combined with the increasing intensity of tropical cyclones, presents ongoing challenges for water management and disaster preparedness.
+
+## Limitations
+
+Several limitations affect this analysis:
+
+1.  **Data Availability**:
+    -   Census API does not support USVI, requiring manual data compilation
+    -   Economic data for territories is less comprehensive than for states
+    -   Post-2020 data is limited
+    -   Some tourism data has missing values, particularly for St. Croix cruise arrivals
+2.  **Data Quality**:
+    -   The 2020 tourism spike appears anomalous and may reflect COVID-19 data collection issues
+    -   Weather station data for USVI has gaps and inconsistencies
+3.  **Analysis Scope**:
+    -   This analysis focuses on major hurricanes; tropical storms are excluded
+    -   Indirect economic impacts (infrastructure damage, migration) are not fully captured
+
+# Conclusions
+
+This analysis of the US Virgin Islands reveals a territory facing significant climate vulnerability coupled with economic dependence on tourism. Between 1989 and 2019, the USVI experienced 13 hurricanes, with the 2017 Irma-Maria double strike representing the most devastating recent event. Tourism arrivals dropped 24% following the 2017 hurricanes, demonstrating the immediate economic shock these events create.
+
+The territory's small population of 87,146 residents, diverse racial and ethnic composition, and limited land area (350 sq km) make it particularly vulnerable to climate-related disruptions. Recovery from major hurricanes requires multiple years and sustained investment in infrastructure and economic revitalization.
+
+The USVI's experience demonstrates the challenges faced by small island territories in an era of increasing climate volatility. Building resilience requires not only physical infrastructure improvements but also economic diversification and long-term strategic planning. The territory's recovery from the 2017 hurricanes provides valuable lessons for other vulnerable island communities worldwide.
+
+## Resources
+
+- [NOAA National Hurricane Center](https://www.nhc.noaa.gov/)
+- [Wikipedia](https://en.wikipedia.org/wiki/Hurricanes_in_the_Virgin_Islands#cite_note-1)
+- [USVI Bureau of Economic Research](https://usviber.org/archived-data/)
+- [US Census Bureau - Island Areas](https://www.census.gov/programs-surveys/decennial-census/about/island-areas.html)
+- [World Bank Open Data](https://data.worldbank.org/)
+- [NOAA NCEI](https://www.ncei.noaa.gov/)
+
+## Acknowledgments
+
+- Analysis and coding assistance from ChatGPT and Claude AI

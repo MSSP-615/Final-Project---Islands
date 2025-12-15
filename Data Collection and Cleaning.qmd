@@ -3,6 +3,8 @@ title: "Data Collecting and Cleaning"
 format: html
 editor: visual
 ---
+
+
 # Collecting data on USVI
 
 ```{r}
@@ -26,6 +28,11 @@ source("my_functions.R")
 # devtools::install_github("ropensci/rnoaa")
 # Get NOAA API token (free): https://www.ncdc.noaa.gov/cdo-web/token
 ```
+
+## Acknowledgments
+
+- Coding assistance from ChatGPT and Claude AI
+
 
 # Population (WDI)
 
