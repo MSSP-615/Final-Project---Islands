@@ -1,0 +1,583 @@
+---
+title: "Data Collecting and Cleaning"
+format: html
+editor: visual
+---
+# Collecting data on USVI
+
+```{r}
+#| label: libraries
+#| echo: false
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(rnoaa)
+library(rvest)
+library(stringr)
+library(here)
+
+source("my_functions.R")
+
+# To install rnoaa from GitHub --
+# install.packages("devtools")
+# devtools::install_github("ropensci/rnoaa")
+# Get NOAA API token (free): https://www.ncdc.noaa.gov/cdo-web/token
+```
+
+# Population (WDI)
+
+```{r}
+#| label: wdi data read in 
+#| echo: false
+
+wdi <- read.csv(
+  here::here(
+    "data", "WDI_Raw",
+    "ddeb80b6-7443-4e36-886e-cd384d0b17e0_Data.csv"
+  )
+)
+```
+
+```{r}
+#| label: wdi clean data
+#| echo: false
+
+wdi <- wdi %>% 
+  dplyr::select(-Country.Name, -Country.Code, -Series.Code) %>% 
+  rename_with(~ gsub("X(\\d{4}).*", "\\1", .), starts_with("X"))
+
+wdi[wdi == ".."] <- NA
+
+wdi <- drop_sparse_rows(wdi, min_values = 25, exclude_cols = 1)
+```
+
+```{r}
+#| label: wdi population data
+#| echo: false
+
+# Filter rows where first column contains "Population" (case insensitive)
+wdi_pop <- wdi %>%
+  filter(grepl("population", Series.Name, ignore.case = TRUE))
+
+# Reshape data from wide to long format
+pop_long <- wdi_pop %>%
+  pivot_longer(
+    cols = starts_with("1") | starts_with("2"),  # Year columns
+    names_to = "year",
+    values_to = "value"
+  ) %>%
+  mutate(
+    year = as.numeric(year),
+    value = as.numeric(value)
+  ) 
+
+#write csv
+write.csv(pop_long, here::here("data", "clean_data", "wdi_pop_long.csv"), row.names = FALSE)
+
+```
+
+# Economic WDI
+
+```{r}
+#| label: wdi rest of data (not population)
+#| echo: false
+
+# filter for what's left after taking out population
+wdi_not_pop <- wdi %>%
+  filter(!grepl("population", Series.Name, ignore.case = TRUE))
+
+# Filter for key economic indicators
+wdi_economic <- wdi_not_pop %>%
+  filter(Series.Name %in% c(
+    "International tourism, number of arrivals",
+    "International tourism, receipts (current US$)",
+    "Unemployment, total (% of total labor force)",
+    "Life expectancy at birth, total (years)",
+    "Fertility rate, total (births per woman)",
+    "Employment in services (% of total employment)",
+    "Labor force, total",
+    "Net migration"
+  ))
+
+# Pivot to long format
+wdi_economic <- wdi_economic %>%
+  # Pivot all year columns to long format
+  pivot_longer(
+    cols = -Series.Name,  # All columns except Series.Name
+    names_to = "year",
+    values_to = "value"
+  ) %>%
+  # Clean and convert data types
+  mutate(
+    year = as.numeric(year),
+    value = as.numeric(value)
+  ) %>%
+  # Rename for clarity
+  rename(indicator = Series.Name) %>%
+  # Arrange by indicator and year
+  arrange(indicator, year)
+
+# Save as CSV
+write.csv(wdi_economic, here::here("data", "clean_data", "wdi_economic.csv"), row.names = FALSE)
+
+```
+
+# Census Ethnicity
+
+```{r}
+#| label: census ethnicity data
+#| echo: false
+
+# Load the raw data
+usvi_census_raw <- readr::read_csv(
+  here::here("data", "Census_Raw", "DECENNIALDPVI2020.DP1.csv"),
+  col_types = readr::cols(.default = "c")
+)
+
+# Clean column names
+colnames(usvi_census_raw) <- c("label", "number", "percent")
+
+# Get all race-related rows to see row numbers
+usvi_ethnicity <- usvi_census_raw %>%
+  filter(grepl("Black or African American|White|Asian|American Indian|Native Hawaiian|Some Other Race|Two or More Races", label)) %>%
+  # Take ONLY the first 8 rows, then exclude row 2
+  slice(1, 3, 4, 5, 6, 7, 8) %>%
+  mutate(
+    category = str_trim(label),
+    population = as.numeric(str_replace_all(number, ",", "")),
+    percent = as.numeric(str_replace(percent, "%", "")),
+    year = 2020
+  ) %>%
+  select(category, population, percent, year)
+
+#print(usvi_ethnicity)
+
+# Verify the total adds up to 100%
+#print(paste("Total percent:", sum(usvi_ethnicity$percent)))
+
+# Verify total population (should be around 87,146)
+#print(paste("Total population:", sum(usvi_ethnicity$population)))
+
+# Save as CSV
+write.csv(usvi_ethnicity, here::here("data", "clean_data", "ethnicity.csv"), row.names = FALSE)
+
+```
+
+# Weather Data (NOAA)
+
+### Hurricanes
+
+```{r}
+#| label: wikipedia hurricane data
+#| echo: false
+
+# Read the Wikipedia page
+url <- "https://en.wikipedia.org/wiki/Hurricanes_in_the_Virgin_Islands"
+page <- read_html(url)
+
+# Extract all tables from the page
+tables <- page %>% html_table(fill = TRUE)
+
+# Extract the most relevant table
+hurricane_table <- tables[[2]]
+
+# Clean up the data
+hurricanes <- hurricane_table %>%
+  as.data.frame() %>%
+  slice(2:14) %>% 
+  select(-Notes) %>%
+  rename('Category' = 'Category[1]')
+
+# Add landfall_date column manually
+hurricanes <- hurricanes %>%
+  mutate(landfall_date = case_when(
+    Year == 2019 & `Hurricane name` == "Hurricane Dorian" ~ as.Date("2019-08-27"),
+    Year == 2017 & `Hurricane name` == "Hurricane Maria" ~ as.Date("2017-09-20"),
+    Year == 2017 & `Hurricane name` == "Hurricane Irma" ~ as.Date("2017-09-06"),
+    Year == 2011 & `Hurricane name` == "Hurricane Irene" ~ as.Date("2011-08-20"),
+    Year == 2010 & `Hurricane name` == "Hurricane Earl" ~ as.Date("2010-08-31"),
+    Year == 2008 & `Hurricane name` == "Hurricane Omar" ~ as.Date("2008-10-16"),
+    Year == 1999 & `Hurricane name` == "Hurricane Lenny" ~ as.Date("1999-11-17"),
+    Year == 1999 & `Hurricane name` == "Hurricane Jose" ~ as.Date("1999-10-21"),
+    Year == 1998 & `Hurricane name` == "Hurricane Georges" ~ as.Date("1998-09-21"),
+    Year == 1996 & `Hurricane name` == "Hurricane Bertha" ~ as.Date("1996-07-08"),
+    Year == 1995 & `Hurricane name` == "Hurricane Marilyn" ~ as.Date("1995-09-15"),
+    Year == 1995 & `Hurricane name` == "Hurricane Luis" ~ as.Date("1995-09-05"),
+    Year == 1989 & `Hurricane name` == "Hurricane Hugo" ~ as.Date("1989-09-18"),
+    TRUE ~ NA_Date_
+  ))
+
+
+write.csv(hurricanes, here::here("data", "clean_data", "hurricanes.csv"), 
+          row.names = FALSE)
+
+```
+
+### Precipitation and Min/Max Temps
+
+```{r}
+#| label: NOAA weather stations
+#| echo: false
+# Find USVI weather stations
+usvi_stations <- ncdc_stations(
+  datasetid = "GHCND",  # Global Historical Climatology Network Daily
+  locationid = "FIPS:78",  # USVI FIPS code
+  limit = 1000)
+
+# Add island identifier based on station name
+station_data <- usvi_stations$data %>%
+  select(id, name, latitude, longitude, mindate, maxdate) %>% 
+  mutate(
+    island = case_when(
+      grepl("ST CROIX|CROIX|STX", name, ignore.case = TRUE) ~ "St. Croix",
+      grepl("ST THOMAS|THOMAS|STT", name, ignore.case = TRUE) ~ "St. Thomas",
+      grepl("ST JOHN|JOHN|STJ", name, ignore.case = TRUE) ~ "St. John",
+      # Fallback to coordinates if name doesn't match
+      latitude >= 17.6 & latitude <= 17.8 & longitude >= -64.9 & longitude <= -64.5 ~ "St. Croix",
+      latitude >= 18.3 & latitude <= 18.4 & longitude >= -65.1 & longitude <= -64.8 ~ "St. Thomas",
+      latitude >= 18.3 & latitude <= 18.4 & longitude >= -64.8 & longitude <= -64.6 ~ "St. John",
+      TRUE ~ "Unknown"
+    )
+  )
+
+# See all CURRENT stations (reporting data from this year)
+active_stations <- station_data %>%
+  filter(maxdate >= "2025-01-01")
+
+# Filter for each of the three islands
+st_croix_station <- active_stations %>%
+  filter(island == "St. Croix") %>%
+  arrange(mindate) %>%  # Sort by earliest date first
+  slice(2)  # Take the first row (earliest mindate)
+
+st_thomas_station <- active_stations %>%
+  filter(island == "St. Thomas") %>%
+  arrange(mindate) %>%  # Sort by earliest date first
+  slice(1)  # Take the first row (earliest mindate)
+
+st_john_station <- active_stations %>%
+  filter(island == "St. John") %>%
+  arrange(mindate) %>%  # Sort by earliest date first
+  slice(1)  # Take the first row (earliest mindate)
+
+```
+
+```{r}
+#| label: pull weather data
+#| echo: false
+# Get weather data for all three islands
+st_john_data <- get_station_data(
+  station_id = st_john_station$id,
+  start_date = st_john_station$mindate,
+  end_date = st_john_station$maxdate,
+  island_name = "St. John",
+  max_retries = 3  
+)
+
+st_thomas_data <- get_station_data(
+  station_id = st_thomas_station$id,
+  start_date = st_thomas_station$mindate,
+  end_date = st_thomas_station$maxdate,
+  island_name = "St. Thomas",
+  max_retries = 3  
+)
+
+st_croix_data <- get_station_data(
+  station_id = st_croix_station$id,
+  start_date = st_croix_station$mindate,
+  end_date = st_croix_station$maxdate,
+  island_name = "St. Croix",
+  max_retries = 3  
+)
+
+# Combine all islands into one dataframe
+usvi_all_weather <- bind_rows(
+  st_croix_data,  # 1951-2025 missing: 1966, 1967, 1968, 1969, 1970, 1971
+  st_thomas_data, # 1953-2025 missing: 1965, 1966, 1967, 1968, 1969, 1970, 1971, 1997
+  st_john_data    # 1972-2025 missing: 2018
+)
+
+# Save to CSV so you don't have to download again
+write.csv(usvi_all_weather, here::here("data", "clean_data", "usvi_weather_data.csv"), 
+          row.names = FALSE)
+
+```
+
+### Heavy Rain Storms, etc.
+
+```{r}
+#| label: pull storm data
+#| echo: false
+
+# Get storm events for two islands
+st_croix_events <- get_storm_events(
+  station_id = st_croix_station$id,
+  start_year = 2000,
+  end_year = 2024,
+  island_name = "St. Croix",
+  max_retries = 3
+)
+
+st_thomas_events <- get_storm_events(
+  station_id = st_thomas_station$id,
+  start_year = 2000,
+  end_year = 2024,
+  island_name = "St. Thomas",
+  max_retries = 3
+)
+
+# Combine all
+all_storm_events <- bind_rows(
+  st_croix_events %>% mutate(island = "St. Croix"),
+  st_thomas_events %>% mutate(island = "St. Thomas")
+)
+
+# Decode the weather types for ease of understanding
+all_storm_events <- all_storm_events %>%
+  mutate(
+    event_type = case_when(
+      datatype == "WT01" ~ "Fog",
+      datatype == "WT03" ~ "Thunder",
+      datatype == "WT04" ~ "Ice/Sleet",
+      datatype == "WT05" ~ "Hail",
+      datatype == "WT06" ~ "Glaze/Rime",
+      datatype == "WT11" ~ "High Winds",
+      datatype == "WT16" ~ "Rain",
+      datatype == "WT18" ~ "Snow",
+      TRUE ~ datatype
+    )
+  )
+
+# Save it as csv for future use
+write.csv(all_storm_events, here::here("data", "clean_data", "usvi_storm_events.csv"), 
+          row.names = FALSE)
+```
+
+```{r}
+#| label: combine all NOAA weather data
+#| echo: false
+
+# Combine both datasets
+usvi_complete <- bind_rows(
+  usvi_all_weather,
+  all_storm_events
+)
+
+# Convert date to proper date format
+usvi_complete <- usvi_complete %>%
+  mutate(date = as.Date(date)) %>% 
+  select(-fl_m, -fl_q, -fl_so, -fl_t)
+
+# Create a cleaned version with readable units
+usvi_clean <- usvi_complete %>%
+  mutate(
+    date = as.Date(date),
+    year = year(date),
+    month = month(date),
+    day = day(date),
+    # Convert values to proper units
+    value_clean = case_when(
+      datatype == "PRCP" ~ value / 10,  # tenths of mm to mm
+      datatype == "TMAX" ~ value / 10,  # tenths of degrees C to degrees C
+      datatype == "TMIN" ~ value / 10,  # tenths of degrees C to degrees C
+      TRUE ~ value  # Storm events are already 0/1
+    ),
+    # Add readable variable names
+    variable = case_when(
+      datatype == "PRCP" ~ "Precipitation (mm)",
+      datatype == "TMAX" ~ "Max Temperature (°C)",
+      datatype == "TMIN" ~ "Min Temperature (°C)",
+      datatype == "WT01" ~ "Fog",
+      datatype == "WT03" ~ "Thunder",
+      datatype == "WT04" ~ "Ice/Sleet",
+      datatype == "WT05" ~ "Hail",
+      datatype == "WT06" ~ "Glaze/Rime",
+      datatype == "WT11" ~ "High Winds",
+      datatype == "WT16" ~ "Rain Event",
+      datatype == "WT18" ~ "Snow",
+      TRUE ~ datatype
+    )
+  )
+
+View(usvi_clean)
+
+# Save it as csv for future use
+write.csv(usvi_clean, here::here("data", "clean_data", "usvi_clean_weather.csv"), 
+          row.names = FALSE)
+
+```
+
+# Tourism Arrivals 
+
+```{r}
+#| label: read in tourism data pdfs and test extraction
+#| echo: false
+
+# Setting PDF directory here
+pdf_dir <- here("data/Tourism_Raw") 
+
+# Get all PDF files
+air_files <- list.files(pdf_dir, pattern = "^AIR.*\\.pdf$", full.names = TRUE)
+cruise_files <- list.files(pdf_dir, pattern = "^CP.*\\.pdf$", full.names = TRUE)
+
+cat("Found", length(air_files), "AIR arrival files\n")
+cat("Found", length(cruise_files), "CRUISE arrival files\n\n")
+
+# Test extraction
+cat("Testing extraction on first file...\n\n")
+test_pdf <- air_files[1]
+text <- pdf_text(test_pdf)
+lines <- str_split(text[1], "\n")[[1]]
+
+# Find a February line
+feb_line <- lines[str_detect(lines, "^\\s*February\\s+\\d")]
+cat("February line:\n", feb_line, "\n\n")
+
+# Extract numbers including decimals and negative signs
+numbers <- str_extract_all(feb_line, "-?[\\d,]+\\.?\\d*")[[1]]
+numbers <- as.numeric(str_remove_all(numbers, ","))
+cat("Numbers extracted:\n")
+print(numbers)
+cat("\nTotal numbers:", length(numbers), "\n")
+
+```
+
+```{r}
+#| label: run extraction on all pdfs
+#| echo: false
+
+# Now run the full extraction
+cat("\n\nExtracting AIR arrivals...\n")
+air_data_list <- map(air_files, ~extract_tourism_data(.x, "air"))
+air_data <- bind_rows(air_data_list)
+
+cat("\nExtracting CRUISE arrivals...\n")
+cruise_data_list <- map(cruise_files, ~extract_tourism_data(.x, "cruise"))
+cruise_data <- bind_rows(cruise_data_list)
+
+```
+
+```{r}
+#| label: check for missing values and fix if possible
+#| echo: false
+
+# Check for missing values
+sum(is.na(air_data))
+sum(is.na(cruise_data))
+
+# Print out NA lines
+air_data[!complete.cases(air_data), ]
+cruise_data %>%
+  filter(!complete.cases(.)) %>%
+  select(year, month, st_thomas_st_john, st_croix, usvi_total) %>%
+  print(n = 100)
+
+# Manually fix some NAs in the retrieval of air arrivals data
+# Fix the September 2017 and 2018 data
+air_data <- air_data %>%
+  mutate(usvi_total = case_when(
+    year == 2017 & month == "September" & arrival_type == "air" ~ 3061,
+    year == 2018 & month == "September" & arrival_type == "air" ~ 28868,
+    TRUE ~ usvi_total
+  ))
+
+# Verify the fix (air arrivals)
+air_data %>%
+  filter(year %in% c(2017, 2018), month == "September", arrival_type == "air") %>%
+  print()
+
+
+# Fix cruise data issues
+cruise_data <- cruise_data %>%
+  mutate(
+    # Pattern 1: When st_croix equals st_thomas_st_john, it's actually the total (no St. Croix data)
+    fixed_total = case_when(
+      is.na(usvi_total) & st_croix == st_thomas_st_john ~ st_croix,
+      TRUE ~ usvi_total
+    ),
+    
+    # Pattern 2: When one island is 0 and the other has data, they're swapped
+    # (2019-2020 pattern where data is in wrong columns)
+    fixed_stt = case_when(
+      st_thomas_st_john == 0 & st_croix > 0 & is.na(usvi_total) ~ st_croix,
+      TRUE ~ st_thomas_st_john
+    ),
+    
+    fixed_stx = case_when(
+      st_thomas_st_john == 0 & st_croix > 0 & is.na(usvi_total) ~ 0,
+      st_croix == st_thomas_st_john & is.na(usvi_total) ~ NA_real_,  # No St. Croix data
+      TRUE ~ st_croix
+    ),
+    
+    # Recalculate total
+    final_total = case_when(
+      !is.na(fixed_total) ~ fixed_total,
+      !is.na(fixed_stt) & !is.na(fixed_stx) ~ fixed_stt + fixed_stx,
+      !is.na(fixed_stt) & is.na(fixed_stx) ~ fixed_stt,  # Assume total = STT when STX missing
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(-st_thomas_st_john, -st_croix, -usvi_total, -fixed_total) %>%
+  rename(
+    st_thomas_st_john = fixed_stt,
+    st_croix = fixed_stx,
+    usvi_total = final_total
+  )
+
+# Check remaining issues
+cat("Remaining incomplete cases:\n")
+cruise_data %>%
+  filter(!complete.cases(.)) %>%
+  select(year, month, st_thomas_st_john, st_croix, usvi_total) %>%
+  print(n = 100)
+
+# Some specific fixes for weird values
+cruise_data <- cruise_data %>%
+  mutate(
+    st_croix = case_when(
+      year == 2018 & month == "September" & st_croix == -11.9 ~ NA_real_,  # This is a % change, not data
+      TRUE ~ st_croix
+    ),
+    # Recalculate total if needed
+    usvi_total = case_when(
+      year == 2018 & month == "September" ~ st_thomas_st_john,  # Use STT as total when STX is NA
+      !is.na(st_thomas_st_john) & is.na(usvi_total) & !is.na(st_croix) ~ st_thomas_st_john + st_croix,
+      !is.na(st_thomas_st_john) & is.na(usvi_total) & is.na(st_croix) ~ st_thomas_st_john,
+      TRUE ~ usvi_total
+    )
+  )
+
+# Final check
+cat("\nFinal incomplete cases:\n")
+cruise_data[!complete.cases(cruise_data), ] %>% print(n = 100)
+
+# These NAs are legitimate - St. Croix had no cruise data those months
+# The totals are correct (just from St. Thomas/St. John)
+
+```
+
+```{r}
+#| label: tourism data into csv
+#| echo: false
+
+# Combine all data
+all_tourism <- bind_rows(air_data, cruise_data)
+
+# Sort data
+month_order <- c("January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December")
+
+all_tourism <- all_tourism %>%
+  mutate(month_num = match(month, month_order)) %>%
+  arrange(year, month_num, arrival_type) %>%
+  select(-month_num)
+
+# Save to CSV so you don't have to download again
+write.csv(all_tourism, here::here("data", "clean_data", "tourism_arrivals.csv"), 
+          row.names = FALSE)
+
+```
+
