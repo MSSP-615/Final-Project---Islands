@@ -1,0 +1,13 @@
+name: Final_Project_USVI
+title: Final_Project_USVI
+username: mmlivaudais
+account: mmlivaudais
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16319414
+bundleId: 11328348
+url: https://mmlivaudais.shinyapps.io/Final_Project_USVI/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: Data Collection and Cleaning.qmd|my_functions.R|README.md|Report_USVI.pdf|Report_USVI.qmd
